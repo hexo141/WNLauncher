@@ -1,0 +1,13 @@
+[source_link]
+mojang = {version_json = "https://launchermeta.mojang.com/mc/game/version_manifest.json",assets = "https://resources.download.minecraft.net/"}
+bmclapi = {version_json ="https://bmclapi2.bangbang93.com/mc/game/version_manifest.json",libraries = "https://bmclapi2.bangbang93.com/maven/",assets = "https://bmclapi2.bangbang93.com/assets/"}
+bmclapi_libraries = "https://bmclapi2.bangbang93.com/maven/"
+[launcher]
+source_link_used = "mojang"
+log_path = "log/luncher/"
+game_path = { default = "WNLauncher/.minecraft/" }
+latest_game_path_used = "default"
+auto_set_thread = true
+download_threads = 64
+download_time_out = 15
+download_max_retries = 5
