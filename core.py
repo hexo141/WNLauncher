@@ -309,3 +309,13 @@ class core:
 		except Exception as e:
 			prints.prints("error", f"Install loader failed: {e}")
 			return ["error", str(e)]
+	def fetch_realtime(self, url: str, *, parse: str = "json", timeout: float = 10.0):
+		try:
+			import realtime
+			if parse == "json":
+				return realtime.fetch_json(url, timeout=timeout)
+			else:
+				return realtime.fetch_text(url, timeout=timeout)
+		except Exception as e:
+			prints.prints("error", f"Realtime fetch failed: {e}")
+			return ("error", str(e))
