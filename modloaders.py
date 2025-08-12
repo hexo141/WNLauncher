@@ -4,9 +4,11 @@ import json
 import zipfile
 import pathlib
 import requests
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 from config_loader import load_config
 import prints
+from realtime import fetch_json, fetch_text
+import xml.etree.ElementTree as ET
 
 
 def _save_profile(profile: Dict[str, Any], game_path: pathlib.Path, name: Optional[str] = None) -> pathlib.Path:
@@ -101,32 +103,160 @@ def install_from_installer(game_version: str, loader_version: str, name: Optiona
     return _save_profile(profile, game_path, name)
 
 
+def _parse_maven_metadata_versions(xml_text: str) -> List[str]:
+    try:
+        root = ET.fromstring(xml_text)
+        versions = [v.text for v in root.findall('.//version') if v is not None and v.text]
+        return versions
+    except Exception:
+        return []
+
+
+def _fetch_maven_versions(url: str) -> List[str]:
+    status, text = fetch_text(url, timeout=15)
+    if status != "success":
+        return []
+    return _parse_maven_metadata_versions(text)
+
+
+def list_fabric_versions(game_version: Optional[str] = None) -> List[str]:
+    # Try Fabric Meta API
+    if game_version:
+        status, data = fetch_json(f"https://meta.fabricmc.net/v2/versions/loader/{game_version}", timeout=15)
+        if status == "success" and isinstance(data, list):
+            # data items have 'loader' with 'version'
+            versions = []
+            for item in data:
+                loader = item.get('loader') or {}
+                v = loader.get('version')
+                if v:
+                    versions.append(v)
+            return sorted(set(versions))
+    # Fallback: return all loader versions
+    status, data = fetch_json("https://meta.fabricmc.net/v2/versions/loader", timeout=15)
+    if status == "success" and isinstance(data, list):
+        return [i.get('version') for i in data if isinstance(i, dict) and i.get('version')]
+    return []
+
+
+def list_quilt_versions(game_version: Optional[str] = None) -> List[str]:
+    if game_version:
+        status, data = fetch_json(f"https://meta.quiltmc.org/v3/versions/loader/{game_version}", timeout=15)
+        if status == "success" and isinstance(data, list):
+            versions = []
+            for item in data:
+                loader = item.get('loader') or {}
+                v = loader.get('version')
+                if v:
+                    versions.append(v)
+            return sorted(set(versions))
+    status, data = fetch_json("https://meta.quiltmc.org/v3/versions/loader", timeout=15)
+    if status == "success" and isinstance(data, list):
+        return [i.get('version') for i in data if isinstance(i, dict) and i.get('version')]
+    return []
+
+
+def list_forge_versions(game_version: Optional[str] = None) -> List[str]:
+    # Prefer Maven metadata since it is authoritative
+    meta_url = "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml"
+    versions = _fetch_maven_versions(meta_url)
+    if not versions:
+        return []
+    if game_version:
+        prefix = f"{game_version}-"
+        versions = [v.split('-')[-1] for v in versions if v.startswith(prefix)]
+    else:
+        versions = [v.split('-')[-1] for v in versions if '-' in v]
+    # Deduplicate while keeping order (latest at end)
+    dedup: List[str] = []
+    for v in versions:
+        if v not in dedup:
+            dedup.append(v)
+    return dedup
+
+
+def list_neoforge_versions(game_version: Optional[str] = None) -> List[str]:
+    meta_url = "https://maven.neoforged.net/releases/net/neoforged/forge/maven-metadata.xml"
+    versions = _fetch_maven_versions(meta_url)
+    if not versions:
+        return []
+    if game_version:
+        prefix = f"{game_version}-"
+        versions = [v.split('-')[-1] for v in versions if v.startswith(prefix)]
+    else:
+        versions = [v.split('-')[-1] for v in versions if '-' in v]
+    dedup: List[str] = []
+    for v in versions:
+        if v not in dedup:
+            dedup.append(v)
+    return dedup
+
+
+def list_optifine_versions(game_version: Optional[str] = None) -> List[str]:
+    # BMCLAPI often exposes optifine listing per game version: /optifine/{mc}
+    base = "https://bmclapi2.bangbang93.com/optifine"
+    url = f"{base}/{game_version}" if game_version else base
+    status, data = fetch_json(url, timeout=15)
+    if status == "success":
+        if isinstance(data, list):
+            # Items could be strings or dicts; normalize to strings if possible
+            out: List[str] = []
+            for item in data:
+                if isinstance(item, str):
+                    out.append(item)
+                elif isinstance(item, dict):
+                    # try fields like 'patch' or 'type+patch'
+                    patch = item.get('patch')
+                    of_type = item.get('type') or item.get('branch')
+                    if of_type and patch:
+                        out.append(f"{of_type}_{patch}")
+                    elif patch:
+                        out.append(str(patch))
+            return out
+    return []
+
+
+def resolve_latest(loader: str, game_version: str) -> Optional[str]:
+    loader = loader.lower()
+    if loader == 'fabric':
+        versions = list_fabric_versions(game_version)
+        return versions[-1] if versions else None
+    if loader == 'quilt':
+        versions = list_quilt_versions(game_version)
+        return versions[-1] if versions else None
+    if loader == 'forge':
+        versions = list_forge_versions(game_version)
+        return versions[-1] if versions else None
+    if loader == 'neoforge':
+        versions = list_neoforge_versions(game_version)
+        return versions[-1] if versions else None
+    if loader == 'optifine':
+        versions = list_optifine_versions(game_version)
+        return versions[-1] if versions else None
+    return None
+
+
 def install_loader(loader: str, game_version: str, loader_version: Optional[str] = None, name: Optional[str] = None) -> pathlib.Path:
     loader = loader.lower()
     cfg = load_config()
     game_path = pathlib.Path(cfg["launcher"]["game_path"][cfg["launcher"]["latest_game_path_used"]])
-    if loader == "fabric":
+    # Auto-resolve latest version if not provided
+    if not loader_version:
+        loader_version = resolve_latest(loader, game_version)
         if not loader_version:
-            raise ValueError("fabric requires loader_version, e.g., 0.16.9")
+            raise ValueError(f"Unable to resolve latest version for {loader} {game_version}")
+
+    if loader == "fabric":
         return install_fabric(game_version, loader_version, name, game_path)
     if loader == "quilt":
-        if not loader_version:
-            raise ValueError("quilt requires loader_version")
         return install_quilt(game_version, loader_version, name, game_path)
     if loader == "forge":
-        if not loader_version:
-            raise ValueError("forge requires loader_version")
         template = cfg["modloader"]["forge_installer_template"]
         return install_from_installer(game_version, loader_version, name, game_path, template)
     if loader == "neoforge":
-        if not loader_version:
-            raise ValueError("neoforge requires loader_version")
         template = cfg["modloader"]["neoforge_installer_template"]
         return install_from_installer(game_version, loader_version, name, game_path, template)
     if loader == "optifine":
-        if not loader_version:
-            raise ValueError("optifine requires loader_version, e.g., H9 or HD_U_I6")
-        # For OptiFine, template also needs type, commonly 'HD_U'. Allow override via name or assume 'HD_U'
         of_type = "HD_U"
         template = cfg["modloader"]["optifine_installer_template"].replace("{type}", of_type)
         return install_from_installer(game_version, loader_version, name, game_path, template)
