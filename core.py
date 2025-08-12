@@ -300,3 +300,12 @@ class core:
 	        prints.prints("error", f"Game failed to start: {e}")
 	    except Exception as e:
 	        prints.prints("error", f"Unexpected error: {e}")
+	def install_loader(self, loader: str, game_version: str, loader_version: str, name: str = None):
+		from modloaders import install_loader as _install
+		try:
+			profile_path = _install(loader, game_version, loader_version, name)
+			prints.prints("success", f"Installed {loader} {loader_version} for {game_version}: {profile_path}")
+			return ["success", str(profile_path)]
+		except Exception as e:
+			prints.prints("error", f"Install loader failed: {e}")
+			return ["error", str(e)]

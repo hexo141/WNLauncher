@@ -2,6 +2,20 @@
 mojang = {version_json = "https://launchermeta.mojang.com/mc/game/version_manifest.json",assets = "https://resources.download.minecraft.net/"}
 bmclapi = {version_json ="https://bmclapi2.bangbang93.com/mc/game/version_manifest.json",libraries = "https://bmclapi2.bangbang93.com/maven/",assets = "https://bmclapi2.bangbang93.com/assets/"}
 bmclapi_libraries = "https://bmclapi2.bangbang93.com/maven/"
+
+# Mod loader endpoints (can be overridden)
+[modloader]
+# Fabric Meta API
+fabric_profile_template = "https://meta.fabricmc.net/v2/versions/loader/{game_version}/{loader_version}/profile/json"
+# Quilt Meta API
+quilt_profile_template = "https://meta.quiltmc.org/v3/versions/loader/{game_version}/{loader_version}/profile/json"
+# Forge installer JAR (BMCLAPI mirror)
+forge_installer_template = "https://bmclapi2.bangbang93.com/forge/maven/net/minecraftforge/forge/{game_version}-{loader_version}/forge-{game_version}-{loader_version}-installer.jar"
+# NeoForge installer JAR (official maven)
+neoforge_installer_template = "https://maven.neoforged.net/releases/net/neoforged/forge/{game_version}-{loader_version}/forge-{game_version}-{loader_version}-installer.jar"
+# OptiFine installer JAR (BMCLAPI mirror)
+optifine_installer_template = "https://bmclapi2.bangbang93.com/optifine/{game_version}/{type}/{loader_version}"
+
 [launcher]
 source_link_used = "mojang"
 log_path = "log/luncher/"
