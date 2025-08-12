@@ -1,30 +1,33 @@
-import json,numpy,time
+import json,time
 import prints
 import os
 import pathlib
 import urllib
 import platform
-import  toml
+from config_loader import load_config
 import download
 import zipfile
 import random
 import subprocess
 import findjava
+import requests
 #config = toml.load('config.toml')
 class core:
 	def __init__(self):
-		self.config = toml.load('config.toml')
+		self.config = load_config()
 		self.source_link = self.config["source_link"][self.config["launcher"]["source_link_used"]]["version_json"]
 		self.game_path = self.config["launcher"]["game_path"][self.config["launcher"]["latest_game_path_used"]]
 		self.threads = self.config["launcher"]["download_threads"]
 		self.system_type = platform.system().lower()
 	def show_all_version(self):
-		_random_path = f"./temp/{random.randint(100,999)}.json"
-		download.main({self.source_link: {"save":_random_path}})
-		_source_get_json = json.loads(open(_random_path,"r").read())
-		os.remove(_random_path)
-		del _random_path
-		all_version = numpy.array(_source_get_json["versions"])
+		try:
+			resp = requests.get(self.source_link, timeout=10)
+			resp.raise_for_status()
+			_source_get_json = resp.json()
+		except Exception as e:
+			prints.prints("error", f"Failed to fetch version manifest: {e}")
+			return {"status": "error"}
+		all_version = _source_get_json["versions"]
 		all_release_version = []
 		all_snapshot_version = []
 		all_old_version = []
@@ -51,20 +54,20 @@ class core:
 		all_version = self.show_all_version()
 		if all_version["status"] == "error":
 			return ["error","Unable to get version list"]
-		for version in numpy.array(all_version[f"all_{game_type}_version"]):
+		for version in all_version[f"all_{game_type}_version"]:
 			if game_version == version["id"]:
 				prints.prints("info",f"Find the game version: {game_version}")
 				install_path = game_path / "versions" / game_rename
 				#temp_response = try_requests.try_requests(version["url"])
 				if create_folder[0] == "error":
-					return 
+					return create_folder
 				#if temp_response[0] == "error":
 				#	return temp_response
 				if game_rename is not None:
 					_version_json = install_path / str(game_rename+pathlib.Path(version["url"]).suffix)
 				else:
 					_version_json = install_path / os.path.basename(urllib.parse.urlparse(version["url"]).path)# 主要是获取游戏JSON文件在url中的文件名
-				if download.main({version["url"]:{"save":_version_json}})[0][0] == "success":
+				if download.main({version["url"]:{"save":_version_json}}, 1, True)[0][0] == "success":
 					with open(_version_json,"r") as f:
 						_game_json = json.load(f)
 					prints.prints("info",f"reading {_version_json}")
@@ -86,18 +89,17 @@ class core:
 								prints.prints("info",f"Found a {self.system_type} natvie: {lib_artifact_path}")
 								lib_path = game_path / "libraries" / lib_artifact_path
 								self._extract_libraries(lib_path,install_path / (game_rename+"-natives"))
-					download.main(library_url,self.threads)# 下载libraries文件
+					download.main(library_url,self.threads, True)# 下载libraries文件
 					#download.main(natvies_url,self.threads)# 下载natvies文件
 					_assetsIndex = _game_json["assetIndex"]
 					assetsJsonSavePath = game_path / "assets" / "indexes" / urllib.parse.urlparse(_assetsIndex["url"]).path.split('/')[-1]
-					download.main({_assetsIndex["url"]:{"save":assetsJsonSavePath,"size":_assetsIndex.get("size"),"sha1":_assetsIndex.get("sha1")}}) # 下载assets的json文件
+					download.main({_assetsIndex["url"]:{"save":assetsJsonSavePath,"size":_assetsIndex.get("size"),"sha1":_assetsIndex.get("sha1")}}, 1, True) # 下载assets的json文件
 					self.download_assets(assetsJsonSavePath)
 					return ["success",f"{game_rename} installation is complete"]
 				return ["error",f"Download Failure: {_version_json}"]
-				
-			else:
-				prints.prints("error",f"No game version found: {game_version}")
-				return ["error",f"No game version found: {game_version}"]
+		# 如果循环结束仍未找到对应版本
+		prints.prints("error",f"No game version found: {game_version}")
+		return ["error",f"No game version found: {game_version}"]
 	def _Createfolders(self,game_path,game_rename):
 		install_path = game_path / "versions" / game_rename
 		try:
@@ -298,3 +300,22 @@ class core:
 	        prints.prints("error", f"Game failed to start: {e}")
 	    except Exception as e:
 	        prints.prints("error", f"Unexpected error: {e}")
+	def install_loader(self, loader: str, game_version: str, loader_version: str, name: str = None):
+		from modloaders import install_loader as _install
+		try:
+			profile_path = _install(loader, game_version, loader_version, name)
+			prints.prints("success", f"Installed {loader} {loader_version} for {game_version}: {profile_path}")
+			return ["success", str(profile_path)]
+		except Exception as e:
+			prints.prints("error", f"Install loader failed: {e}")
+			return ["error", str(e)]
+	def fetch_realtime(self, url: str, *, parse: str = "json", timeout: float = 10.0):
+		try:
+			import realtime
+			if parse == "json":
+				return realtime.fetch_json(url, timeout=timeout)
+			else:
+				return realtime.fetch_text(url, timeout=timeout)
+		except Exception as e:
+			prints.prints("error", f"Realtime fetch failed: {e}")
+			return ("error", str(e))
