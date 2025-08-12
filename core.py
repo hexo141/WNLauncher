@@ -11,6 +11,7 @@ import random
 import subprocess
 import findjava
 import requests
+import sys
 #config = toml.load('config.toml')
 class core:
 	def __init__(self):
@@ -162,31 +163,34 @@ class core:
 	def runMC(self):
 	    game_name = input("version name:")
 	    _game_version_path = pathlib.Path(self.game_path) / "versions" / game_name
-	    print(findjava.main())
-	    java_path = findjava.main()[int(input("Select:"))][0]
+	    # 自动选择可用的 Java
+	    try:
+	        java_path = self._auto_select_java()
+	    except Exception as e:
+	        prints.prints("error", f"No Java found: {e}")
+	        return ["error", f"No Java found: {e}"]
 	    # 加载游戏JSON配置
 	    game_json_path = _game_version_path / f"{game_name}.json"
 	    with open(game_json_path, "r") as f:
 	        _game_json = json.load(f)
-	    
+	    # 自动内存分配（MB）
+	    alloc_mb = self._auto_memory_mb(_game_json)
+	    xms_flag = f"-Xms{max(512, alloc_mb // 2)}M"
+	    xmx_flag = f"-Xmx{alloc_mb}M"
 	    # 1. 构建正确的类路径
 	    class_path_parts = []
-	    
 	    # 获取当前系统类型（处理Mac的特殊情况）
 	    current_os = self.system_type
 	    if current_os == "darwin":
 	        current_os = "osx"
-	    
 	    for lib in _game_json.get("libraries", []):
 	        # 处理库规则
 	        rules = lib.get("rules", [])
 	        include_lib = True
-	        
 	        if rules:
 	            for rule in rules:
 	                os_condition = rule.get("os", {})
 	                os_name = os_condition.get("name", "")
-	                
 	                if os_name:
 	                    # 检查规则是否匹配当前系统
 	                    if os_name == current_os:
@@ -198,7 +202,6 @@ class core:
 	                        if rule.get("action") == "allow":
 	                            include_lib = False
 	                        continue
-	        
 	        # 如果库应该包含且是普通库（非原生库）
 	        if include_lib and "natives" not in lib:
 	            if "downloads" in lib and "artifact" in lib["downloads"]:
@@ -207,7 +210,6 @@ class core:
 	                    class_path_parts.append(str(lib_path))
 	                else:
 	                    prints.prints("warning", f"Library not found: {lib_path}")
-	    
 	    # 添加主游戏JAR
 	    main_jar = _game_version_path / f"{game_name}.jar"
 	    if not main_jar.exists():
@@ -215,44 +217,41 @@ class core:
 	        if "downloads" in _game_json and "client" in _game_json["downloads"]:
 	            client_url = _game_json["downloads"]["client"]["url"]
 	            download.main({client_url: {"save": main_jar}}, 1, True)
-	    
 	    class_path_parts.append(str(main_jar))
-	    
 	    # 构建类路径字符串
 	    class_path_separator = ";" if os.name == "nt" else ":"
 	    class_path = class_path_separator.join(class_path_parts)
-	
-	    # 2. 下载日志配置文件
+	    # 2. 下载日志配置文件（如果需要）
 	    log_config_path = None
+	    log_sha1 = None
 	    if "logging" in _game_json and "client" in _game_json["logging"]:
 	        log_file = _game_json["logging"]["client"]["file"]
-	        log_id = log_file["id"]
-	        log_url = log_file["url"]
-	        log_sha1 = log_file["sha1"]
-	        log_config_path = _game_version_path / log_id
-	        
-	        # 确保目录存在
-	        os.makedirs(_game_version_path, exist_ok=True)
-	        
-	        # 下载日志配置
-	        if not os.path.exists(log_config_path):
-	            download.main({log_url: {"save": log_config_path}}, 1, True)
-	    print(log_file)
-	    if download.get_sha1(log_config_path) != log_sha1:
-	    	return ["error",f"The {log_config_path}'s SHA1 fails the check"]
+	        log_id = log_file.get("id")
+	        log_url = log_file.get("url")
+	        log_sha1 = log_file.get("sha1")
+	        if log_id and log_url:
+	            log_config_path = _game_version_path / log_id
+	            # 确保目录存在
+	            os.makedirs(_game_version_path, exist_ok=True)
+	            # 下载日志配置
+	            if not os.path.exists(log_config_path):
+	                download.main({log_url: {"save": log_config_path}}, 1, True)
+	            # 校验（如果提供了 sha1）
+	            if log_sha1 and download.get_sha1(log_config_path) != log_sha1:
+	                return ["error", f"The {log_config_path}'s SHA1 fails the check"]
 	    # 3. 准备natives目录
 	    natives_dir = _game_version_path / f"{game_name}-natives"
 	    os.makedirs(natives_dir, exist_ok=True)
-	    
 	    # 4. 构建启动命令
 	    assets_dir = pathlib.Path(self.game_path) / "assets" / "objects"
 	    asset_index_id = _game_json["assetIndex"]["id"]
 	    classpath_file = _game_version_path / "classpath.txt"
 	    with open(classpath_file, "w", encoding="utf-8") as f:
-	    	f.write(class_path)
+	        f.write(class_path)
 	    command = [
 	        f'"{java_path}"',
-	        "-Xmx2G",
+	        xms_flag,
+	        xmx_flag,
 	        "-XX:+UseG1GC",
 	        "-XX:-UseAdaptiveSizePolicy",
 	        "-XX:-OmitStackTraceInFastThrow",
@@ -260,7 +259,6 @@ class core:
 	        f'-Dos.version="{platform.release()}"',
 	        "-Dminecraft.launcher.brand=WNLauncher",
 	        "-Dminecraft.launcher.version=1.0.0",
-	        f'-Dlog4j.configurationFile="{log_config_path}"',
 	        f'-Djava.library.path="{natives_dir}"',
 	        "-Dorg.lwjgl.util.DebugLoader=true",
 	        "-Dorg.lwjgl.util.Debug=true",
@@ -293,6 +291,9 @@ class core:
 	        "--versionType",
 	        "WNLauncher"
 	    ]
+	    # 仅当有日志配置时添加参数
+	    if log_config_path:
+	        command.insert(11, f'-Dlog4j.configurationFile="{log_config_path}"')
 	    command = " ".join(command)
 	    try:
 	        subprocess.run(command, check=True,shell=True)
@@ -319,3 +320,52 @@ class core:
 		except Exception as e:
 			prints.prints("error", f"Realtime fetch failed: {e}")
 			return ("error", str(e))
+
+	def _auto_select_java(self) -> str:
+		candidates = findjava.main()
+		if not candidates:
+			raise RuntimeError("No Java runtime found")
+		# Prefer 64-bit over 32-bit
+		candidates.sort(key=lambda x: (0 if ('64' in (x[2] or '').lower() or 'x86_64' in (x[2] or '').lower() or 'arm64' in (x[2] or '').lower()) else 1, x[0]))
+		return candidates[0][0]
+
+	def _auto_memory_mb(self, game_json: dict) -> int:
+		# Base on system memory; default to 2G min, cap at 8G unless very high RAM
+		try:
+			if sys.platform.startswith('linux'):
+				with open('/proc/meminfo','r') as f:
+					mem_total_kb = 0
+					for line in f:
+						if line.startswith('MemTotal:'):
+							mem_total_kb = int(line.split()[1])
+							break
+					total_mb = max(512, mem_total_kb // 1024)
+			elif sys.platform == 'darwin':
+				import subprocess as _sp
+				out = _sp.check_output(['sysctl','-n','hw.memsize']).decode().strip()
+				total_mb = int(int(out)//(1024*1024))
+			elif os.name == 'nt':
+				import ctypes as _ct
+				class MEMORYSTATUSEX(_ct.Structure):
+					_fields_ = [('dwLength', _ct.c_ulong),
+					('dwMemoryLoad', _ct.c_ulong),
+					('ullTotalPhys', _ct.c_ulonglong),
+					('ullAvailPhys', _ct.c_ulonglong),
+					('ullTotalPageFile', _ct.c_ulonglong),
+					('ullAvailPageFile', _ct.c_ulonglong),
+					('ullTotalVirtual', _ct.c_ulonglong),
+					('ullAvailVirtual', _ct.c_ulonglong),
+					('sullAvailExtendedVirtual', _ct.c_ulonglong),]
+				mem_status = MEMORYSTATUSEX()
+				mem_status.dwLength = _ct.sizeof(MEMORYSTATUSEX)
+				_ct.windll.kernel32.GlobalMemoryStatusEx(_ct.byref(mem_status))
+				total_mb = int(mem_status.ullTotalPhys // (1024*1024))
+			else:
+				total_mb = 4096
+		except Exception:
+			# Fallback default
+			total_mb = 4096
+		# Allocate: use 50% of total RAM, clamp between 2048 and 8192 by default
+		alloc_mb = max(2048, min(8192, total_mb // 2))
+		# Adjust for assets-heavy versions if necessary (placeholder: could inspect arguments)
+		return alloc_mb
