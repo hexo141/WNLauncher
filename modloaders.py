@@ -12,12 +12,22 @@ import xml.etree.ElementTree as ET
 
 
 def _save_profile(profile: Dict[str, Any], game_path: pathlib.Path, name: Optional[str] = None) -> pathlib.Path:
+    cfg = load_config()
+    persist = bool(cfg.get('launcher', {}).get('persist_profiles', False))
     version_id = name or profile.get("id")
     if not version_id:
         raise ValueError("Profile JSON missing 'id' and no name provided")
     install_path = game_path / "versions" / version_id
-    os.makedirs(install_path, exist_ok=True)
     profile_path = install_path / f"{version_id}.json"
+    if not persist:
+        # If not persisting, ensure no stale file remains
+        try:
+            if profile_path.exists():
+                os.remove(profile_path)
+        except Exception:
+            pass
+        return profile_path
+    os.makedirs(install_path, exist_ok=True)
     with open(profile_path, "w", encoding="utf-8") as f:
         json.dump(profile, f, ensure_ascii=False, indent=2)
     return profile_path
