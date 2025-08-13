@@ -11,6 +11,7 @@ import random
 import subprocess
 import findjava
 import requests
+from typing import Optional
 #config = toml.load('config.toml')
 class core:
 	def __init__(self):
@@ -329,6 +330,114 @@ class core:
 	        prints.prints("error", f"Game failed to start: {e}")
 	    except Exception as e:
 	        prints.prints("error", f"Unexpected error: {e}")
+	def launch_version(self, game_name: str, *, java_path: Optional[str] = None, username: str = "Player", access_token: str = "noauth", uuid: str = "00000000-0000-0000-0000-000000000000"):
+	    """Launch a version non-interactively for GUI usage."""
+	    _game_version_path = pathlib.Path(self.game_path) / "versions" / game_name
+	    if not _game_version_path.exists():
+	        return ["error", f"Version directory not found: {_game_version_path}"]
+	    # Java selection
+	    if not java_path:
+	        found = findjava.main()
+	        if found:
+	            java_path = found[0][0]
+	        else:
+	            java_path = "java"
+	    # Load JSON
+	    game_json_path = _game_version_path / f"{game_name}.json"
+	    if not game_json_path.exists():
+	        return ["error", f"Game profile json missing: {game_json_path}"]
+	    with open(game_json_path, "r") as f:
+	        _game_json = json.load(f)
+	    # Classpath
+	    class_path_parts = []
+	    current_os = self.system_type
+	    if current_os == "darwin":
+	        current_os = "osx"
+	    for lib in _game_json.get("libraries", []):
+	        rules = lib.get("rules", [])
+	        include_lib = True
+	        if rules:
+	            for rule in rules:
+	                os_condition = rule.get("os", {})
+	                os_name = os_condition.get("name", "")
+	                if os_name:
+	                    if os_name == current_os:
+	                        if rule.get("action") == "disallow":
+	                            include_lib = False
+	                        break
+	                    else:
+	                        if rule.get("action") == "allow":
+	                            include_lib = False
+	                        continue
+	        if include_lib and "downloads" in lib and "artifact" in lib["downloads"]:
+	            lib_path = pathlib.Path(self.game_path) / "libraries" / lib["downloads"]["artifact"]["path"]
+	            if lib_path.exists():
+	                class_path_parts.append(str(lib_path))
+	    main_jar = _game_version_path / f"{game_name}.jar"
+	    if not main_jar.exists() and "downloads" in _game_json and "client" in _game_json["downloads"]:
+	        client_url = _game_json["downloads"]["client"]["url"]
+	        download.main({client_url: {"save": main_jar}}, 1, True)
+	    class_path_parts.append(str(main_jar))
+	    class_path_separator = ";" if os.name == "nt" else ":"
+	    class_path = class_path_separator.join(class_path_parts)
+	    # Logging config
+	    log_config_path = None
+	    if "logging" in _game_json and "client" in _game_json["logging"]:
+	        log_file = _game_json["logging"]["client"].get("file") or {}
+	        log_id = log_file.get("id")
+	        log_url = log_file.get("url")
+	        if log_id and log_url:
+	            log_config_path = _game_version_path / log_id
+	            if not os.path.exists(log_config_path):
+	                download.main({log_url: {"save": log_config_path}}, 1, True)
+	    # Natives dir
+	    natives_dir = _game_version_path / f"{game_name}-natives"
+	    os.makedirs(natives_dir, exist_ok=True)
+	    # Build command
+	    assets_dir = pathlib.Path(self.game_path) / "assets"
+	    asset_index_id = _game_json["assetIndex"]["id"]
+	    command = [
+	        java_path,
+	        "-Xmx2G",
+	        "-XX:+UseG1GC",
+	        "-XX:-UseAdaptiveSizePolicy",
+	        "-XX:-OmitStackTraceInFastThrow",
+	        f"-Dos.name={platform.system()}",
+	        f"-Dos.version={platform.release()}",
+	        "-Dminecraft.launcher.brand=WNLauncher",
+	        "-Dminecraft.launcher.version=1.0.0",
+	        f"-Djava.library.path={natives_dir}",
+	        "-Dlog4j2.formatMsgNoLookups=true",
+	        f"-Dio.netty.native.workdir={natives_dir}",
+	        "-cp",
+	        class_path,
+	        _game_json["mainClass"],
+	        "--version",
+	        game_name,
+	        "--gameDir",
+	        str(_game_version_path),
+	        "--assetsDir",
+	        str(assets_dir),
+	        "--assetsIndex",
+	        asset_index_id,
+	        "--uuid",
+	        uuid,
+	        "--accessToken",
+	        access_token,
+	        "--userType",
+	        "Legacy",
+	        "--username",
+	        username,
+	        "--versionType",
+	        "WNLauncher",
+	    ]
+	    if log_config_path is not None:
+	        command.insert(10, f"-Dlog4j.configurationFile={log_config_path}")
+	    try:
+	        subprocess.Popen(command, cwd=str(_game_version_path))
+	        return ["success", f"Launched {game_name}"]
+	    except Exception as e:
+	        return ["error", f"Launch failed: {e}"]
 	def install_loader(self, loader: str, game_version: str, loader_version: str, name: str = None):
 		from modloaders import install_loader as _install
 		try:
