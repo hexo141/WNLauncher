@@ -72,28 +72,53 @@ class core:
 						_game_json = json.load(f)
 					prints.prints("info",f"reading {_version_json}")
 					library_url = {}
+					natives_url = {}
+					# Normalize OS key for natives mapping
+					current_os_key = self.system_type
+					if current_os_key == "darwin":
+						current_os_key = "osx"
+					# Collect library artifacts and native classifiers for download first
 					for library in _game_json["libraries"]:
-						lib_artifact_path = library["downloads"]["artifact"]["path"]
-						lib_artifact_url = library["downloads"]["artifact"]["url"]
-						# 替换链接的默认源为bmclapi源
-						if self.config["launcher"]["source_link_used"] != "mojang":
-							lib_artifact_url = lib_artifact_url.replace("https://libraries.minecraft.net/",self.config["source_link"][self.config["launcher"]["source_link_used"]]["libraries"])
-						library_url[lib_artifact_url] = {"save":game_path / "libraries" / lib_artifact_path,
-						"size": library["downloads"]["artifact"]["size"],
-						"sha1":library["downloads"]["artifact"]["sha1"]}
-						os.makedirs(os.path.dirname(game_path / "libraries" / lib_artifact_path),exist_ok=True)
-						rules = library.get("rules",[])
-						for rule in rules:
-							os_info = rule.get("os",{})
-							if os_info.get("name") == self.system_type:
-								prints.prints("info",f"Found a {self.system_type} natvie: {lib_artifact_path}")
-								lib_path = game_path / "libraries" / lib_artifact_path
-								self._extract_libraries(lib_path,install_path / (game_rename+"-natives"))
-					download.main(library_url,self.threads, True)# 下载libraries文件
-					#download.main(natvies_url,self.threads)# 下载natvies文件
+						downloads = library.get("downloads", {})
+						artifact = downloads.get("artifact")
+						if artifact:
+							lib_artifact_path = artifact.get("path")
+							lib_artifact_url = artifact.get("url")
+							# 替换链接的默认源为bmclapi源
+							if self.config["launcher"]["source_link_used"] != "mojang" and lib_artifact_url:
+								lib_artifact_url = lib_artifact_url.replace("https://libraries.minecraft.net/",self.config["source_link"][self.config["launcher"]["source_link_used"]]["libraries"])
+							if lib_artifact_url and lib_artifact_path:
+								library_url[lib_artifact_url] = {"save": game_path / "libraries" / lib_artifact_path,
+									"size": artifact.get("size"),
+									"sha1": artifact.get("sha1")}
+								os.makedirs(os.path.dirname(game_path / "libraries" / lib_artifact_path), exist_ok=True)
+						# Handle native classifiers
+						if "natives" in library and "classifiers" in downloads:
+							classifier_key = library["natives"].get(current_os_key)
+							if classifier_key:
+								classifier = downloads["classifiers"].get(classifier_key)
+								if classifier:
+									native_path = classifier.get("path")
+									native_url = classifier.get("url")
+									if self.config["launcher"]["source_link_used"] != "mojang" and native_url:
+										native_url = native_url.replace("https://libraries.minecraft.net/", self.config["source_link"][self.config["launcher"]["source_link_used"]]["libraries"])
+									if native_url and native_path:
+										natives_url[native_url] = {"save": game_path / "libraries" / native_path,
+											"size": classifier.get("size"),
+											"sha1": classifier.get("sha1")}
+										os.makedirs(os.path.dirname(game_path / "libraries" / native_path), exist_ok=True)
+					# Download libraries and natives
+					download.main(library_url, self.threads, True)
+					if natives_url:
+						download.main(natives_url, self.threads, True)
+						# Extract natives after download
+						natives_dir = install_path / (game_rename+"-natives")
+						for save_info in natives_url.values():
+							self._extract_libraries(save_info["save"], natives_dir)
+					# 下载assets的json文件
 					_assetsIndex = _game_json["assetIndex"]
 					assetsJsonSavePath = game_path / "assets" / "indexes" / urllib.parse.urlparse(_assetsIndex["url"]).path.split('/')[-1]
-					download.main({_assetsIndex["url"]:{"save":assetsJsonSavePath,"size":_assetsIndex.get("size"),"sha1":_assetsIndex.get("sha1")}}, 1, True) # 下载assets的json文件
+					download.main({_assetsIndex["url"]:{"save":assetsJsonSavePath,"size":_assetsIndex.get("size"),"sha1":_assetsIndex.get("sha1")}}, 1, True)
 					self.download_assets(assetsJsonSavePath)
 					return ["success",f"{game_rename} installation is complete"]
 				return ["error",f"Download Failure: {_version_json}"]
@@ -221,14 +246,15 @@ class core:
 	    # 构建类路径字符串
 	    class_path_separator = ";" if os.name == "nt" else ":"
 	    class_path = class_path_separator.join(class_path_parts)
-	
+		
 	    # 2. 下载日志配置文件
 	    log_config_path = None
+	    log_sha1 = None
 	    if "logging" in _game_json and "client" in _game_json["logging"]:
 	        log_file = _game_json["logging"]["client"]["file"]
 	        log_id = log_file["id"]
 	        log_url = log_file["url"]
-	        log_sha1 = log_file["sha1"]
+	        log_sha1 = log_file.get("sha1")
 	        log_config_path = _game_version_path / log_id
 	        
 	        # 确保目录存在
@@ -237,31 +263,35 @@ class core:
 	        # 下载日志配置
 	        if not os.path.exists(log_config_path):
 	            download.main({log_url: {"save": log_config_path}}, 1, True)
-	    print(log_file)
-	    if download.get_sha1(log_config_path) != log_sha1:
-	    	return ["error",f"The {log_config_path}'s SHA1 fails the check"]
+	        # 校验日志配置（如果提供了sha1）
+	        if log_sha1 is not None:
+	            if download.get_sha1(log_config_path) != log_sha1:
+	                return ["error",f"The {log_config_path}'s SHA1 fails the check"]
 	    # 3. 准备natives目录
 	    natives_dir = _game_version_path / f"{game_name}-natives"
 	    os.makedirs(natives_dir, exist_ok=True)
 	    
-	    # 4. 构建启动命令
+	    # 4. 构建启动命令（使用安全的列表形式，不使用shell=True）
 	    assets_dir = pathlib.Path(self.game_path) / "assets" / "objects"
 	    asset_index_id = _game_json["assetIndex"]["id"]
 	    classpath_file = _game_version_path / "classpath.txt"
 	    with open(classpath_file, "w", encoding="utf-8") as f:
 	    	f.write(class_path)
 	    command = [
-	        f'"{java_path}"',
+	        java_path,
 	        "-Xmx2G",
 	        "-XX:+UseG1GC",
 	        "-XX:-UseAdaptiveSizePolicy",
 	        "-XX:-OmitStackTraceInFastThrow",
-	        f'-Dos.name="{platform.system()}"',
-	        f'-Dos.version="{platform.release()}"',
+	        f"-Dos.name={platform.system()}",
+	        f"-Dos.version={platform.release()}",
 	        "-Dminecraft.launcher.brand=WNLauncher",
 	        "-Dminecraft.launcher.version=1.0.0",
-	        f'-Dlog4j.configurationFile="{log_config_path}"',
-	        f'-Djava.library.path="{natives_dir}"',
+	    ]
+	    if log_config_path is not None:
+	        command.append(f"-Dlog4j.configurationFile={log_config_path}")
+	    command.extend([
+	        f"-Djava.library.path={natives_dir}",
 	        "-Dorg.lwjgl.util.DebugLoader=true",
 	        "-Dorg.lwjgl.util.Debug=true",
 	        "-Dstderr.encoding=UTF-8",
@@ -269,10 +299,10 @@ class core:
 	        "-Djdk.lang.Process.allowAmbiguousCommands=true",
 	        "-Dfml.ignoreInvalidMinecraftCertificates=True",
 	        "-Dfml.ignorePatchDiscrepancies=True",
-	        " -Dlog4j2.formatMsgNoLookups=true",
+	        "-Dlog4j2.formatMsgNoLookups=true",
 	        f"-Dio.netty.native.workdir={natives_dir}",
 	        "-cp",
-	         f"@{classpath_file}",
+	        class_path,
 	        _game_json["mainClass"],
 	        "--version",
 	        game_name,
@@ -292,10 +322,9 @@ class core:
 	        "O_Huangyu",
 	        "--versionType",
 	        "WNLauncher"
-	    ]
-	    command = " ".join(command)
+	    ])
 	    try:
-	        subprocess.run(command, check=True,shell=True)
+	        subprocess.run(command, check=True)
 	    except subprocess.CalledProcessError as e:
 	        prints.prints("error", f"Game failed to start: {e}")
 	    except Exception as e:
