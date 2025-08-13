@@ -18,7 +18,7 @@ optifine_installer_template = "https://bmclapi2.bangbang93.com/optifine/{game_ve
 
 [launcher]
 source_link_used = "mojang"
-log_path = "log/launcher/"
+log_path = "log/luncher/"
 game_path = { default = "WNLauncher/.minecraft/" }
 latest_game_path_used = "default"
 auto_set_thread = true
